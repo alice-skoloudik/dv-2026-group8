@@ -12,7 +12,8 @@
 
 **Group members:**
 
-- Firstname Lastname
+- Alice Školoudíková
+- Robin Lux
 
 **Research question:** One sentence stating what you're investigating.
 

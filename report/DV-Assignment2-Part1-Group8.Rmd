@@ -1,0 +1,568 @@
+---
+title: "DV Assignment 2, Part 1: Same test results, different advice?"
+author: "Group 8: Alice Školoudíková, Robin Lux"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# clear environment so knitting only depends on what's in this file
+rm(list = ls())
+
+# installs (if missing) and loads every package this project uses - add any
+# new packages to scripts/00-packages.R, not here
+source("../scripts/00-packages.R")
+
+# downloads the data into data/raw/ if you don't already have it, then loads
+# eindscores, referentieniveaus, schooladviezen and schoolweging into this
+# session - see scripts/01-get-data.R for what each one contains
+source(here("scripts", "01-get-data.R"))
+
+theme_set(theme_minimal(base_size = 11))
+```
+
+## Research question
+
+**Do schools with similar test results give similar secondary-school advice, regardless of how disadvantaged their student population is?**
+
+**Level: inference.**
+
+**Target audience: secondary schools.**
+Because our audience might not be familiar with the statistical concepts or with what the collected data looks like, the visualization should be simple and make the interpretation of the results very explicit. Also the visualization should have a clear message that is understandable both from the title and the plots themselves, for example by using clear titles and axis labels and units that are familiar to our audience.
+
+## Exploratory process
+
+We operationalize the research question as: At the same test results, do more disadvantaged schools (higher school weighting, *schoolweging*) give lower secondary-school advice?
+
+As the measure of a school's test results we pool the three subjects of the reference levels into one index: the share of all results in maths, reading and writing that reach the target level (1S for maths, 2F for reading and writing). The research question is about a school's test results as a whole, not about one subject, so one index fits it better than separate plots per subject. It also uses all the test information we have and makes every figure one plot instead of two. In the statistical test we check that the pattern is the same for each subject separately.
+
+Our exploration process was:
+
+1. **Data preparation.** We combined the advice, reference-level and school-weighting files into one table with one row per school, and removed schools we could not use.
+2. **Single variables.** We looked at the distribution of each variable to understand the data and spot problems, such as very small schools.
+3. **Test results and advice.** We split schools into three equal groups by school weighting and plotted their advice against their test results. Because a school's advice can be summarised in several ways, we compared three summaries: the share of pupils advised HAVO or higher, the mean advice on a scale from 1 (PRO) to 6 (VWO), and the share of pupils in each of six main tracks. We wanted to see whether the choice of summary changes the relationship between test results and advice.
+4. **First statistical test.** We fitted a linear regression with an interaction between test results and school weighting, to check whether the pattern in the plots is more than noise.
+
+### Data preparation
+
+We kept regular primary schools only, joined the three files, and removed schools with more than one location (they cannot be matched to one school weighting), without a school weighting, or with no pupils in the reference levels or advice. DUO hides counts of 1–4 pupils as "<5"; we replaced these with 2.5 and will check later whether the results change when we use 1 or 4 instead. The table below shows how many schools remain after each step.
+
+```{r data-prep}
+
+## Set value for "<5" to 2.5
+hidden_value <- 2.5
+
+## Create function that turns "<5" into 2.5 and text into numbers
+to_number <- function(x) {
+  x <- as.character(x)
+  x[x == "<5"] <- hidden_value
+  as.numeric(x)
+}
+
+## Order names of the ten advice tracks
+track_cols <- c(
+  "PRO", "VMBO_B", "VMBO_B_K", "VMBO_K", "VMBO_K_GT",
+  "VMBO_GT", "VMBO_GT_HAVO", "HAVO", "HAVO_VWO", "VWO"
+)
+track_names <- c(
+  "PRO", "VMBO-B", "VMBO-B/K", "VMBO-K", "VMBO-K/GT",
+  "VMBO-GT", "VMBO-GT/HAVO", "HAVO", "HAVO/VWO", "VWO"
+)
+
+## Clean reference levels for maths, reading and writing
+levels_clean <- referentieniveaus |>
+  # filter out special primary schools
+  filter(SOORT_PO == "Bo") |>
+  # turn pupil counts into numbers
+  mutate(across(
+    c(
+      REKENEN_LAGER1F, REKENEN_1F, REKENEN_1S, LV_LAGER1F, LV_1F, LV_2F,
+      TV_LAGER1F, TV_1F, TV_2F
+    ),
+    to_number
+  )) |>
+  # count pupils and compute share at target level per subject
+  mutate(
+    n_maths = REKENEN_LAGER1F + REKENEN_1F + REKENEN_1S,
+    n_reading = LV_LAGER1F + LV_1F + LV_2F,
+    n_writing = TV_LAGER1F + TV_1F + TV_2F,
+    pct_maths_1s = REKENEN_1S / n_maths,
+    pct_reading_2f = LV_2F / n_reading,
+    pct_writing_2f = TV_2F / n_writing,
+    # pooled index: share of all maths, reading and writing results that
+    # reach the target level
+    pct_target = (REKENEN_1S + LV_2F + TV_2F) /
+      (n_maths + n_reading + n_writing)
+  ) |>
+  # keep only the columns we need
+  select(
+    INSTELLINGSCODE, VESTIGINGSCODE, PROVINCIE, GEMEENTENAAM,
+    n_maths, n_reading, n_writing,
+    pct_maths_1s, pct_reading_2f, pct_writing_2f, pct_target
+  )
+
+## Clean school advice
+advice_clean <- schooladviezen |>
+  # filter out special primary schools
+  filter(SOORT_PO == "Bo") |>
+  # turn pupil counts into numbers
+  mutate(across(all_of(track_cols), to_number)) |>
+  # count pupils, share of HAVO+ advice, mean advice (PRO = 1 ... VWO = 6)
+  mutate(
+    n_groep8 = PRO + VMBO_B + VMBO_B_K + VMBO_K + VMBO_K_GT +
+      VMBO_GT + VMBO_GT_HAVO + HAVO + HAVO_VWO + VWO,
+    pct_havo_plus = (HAVO + HAVO_VWO + VWO) / n_groep8,
+    mean_advice = (
+      1 * PRO + 2 * VMBO_B + 2.5 * VMBO_B_K + 3 * VMBO_K +
+        3.5 * VMBO_K_GT + 4 * VMBO_GT + 4.5 * VMBO_GT_HAVO + 5 * HAVO +
+        5.5 * HAVO_VWO + 6 * VWO
+    ) / n_groep8
+  ) |>
+  # keep only the columns we need
+  select(
+    INSTELLINGSCODE, VESTIGINGSCODE, all_of(track_cols),
+    n_groep8, pct_havo_plus, mean_advice
+  )
+
+## Clean school weighting
+weighting_all <- schoolweging |>
+  # drop rows without a school weighting (e.g. language classes, AZC
+  # schools); they have no pupils and would otherwise count as an extra
+  # location below
+  filter(!is.na(schoolweging)) |>
+  # take school ID from OVT
+  mutate(INSTELLINGSCODE = str_split_i(OVT, "\\|", 1)) |>
+  # count locations per school
+  add_count(INSTELLINGSCODE, name = "n_locations")
+
+## Keep schools with one location in the school weighting file
+weighting_clean <- weighting_all |>
+  filter(n_locations == 1) |>
+  # keep only the columns we need
+  select(INSTELLINGSCODE, schoolweging, spreiding)
+
+## Join advice with reference levels
+step_levels <- advice_clean |>
+  inner_join(levels_clean, by = c("INSTELLINGSCODE", "VESTIGINGSCODE"))
+
+## Filter out schools with more than one location
+step_single <- step_levels |>
+  add_count(INSTELLINGSCODE, name = "n_locations") |>
+  filter(n_locations == 1)
+
+## Keep schools that have a school weighting
+step_found <- step_single |>
+  semi_join(weighting_all, by = "INSTELLINGSCODE")
+
+## Join with school weighting (one location in the weighting file only)
+step_weighting <- step_found |>
+  inner_join(weighting_clean, by = "INSTELLINGSCODE")
+
+## Filter out schools with no pupils in reference levels or advice
+schools <- step_weighting |>
+  filter(n_maths > 0, n_reading > 0, n_writing > 0, n_groep8 > 0)
+
+## Create table of schools left after each step
+sample_flow <- tibble(
+  step = c(
+    "All schools in advice file",
+    "Regular schools only",
+    "Matched to reference levels",
+    "One location in DUO files",
+    "Has a school weighting",
+    "One location in school weighting file",
+    "Pupils in reference levels and advice"
+  ),
+  schools = c(
+    nrow(schooladviezen), nrow(advice_clean), nrow(step_levels),
+    nrow(step_single), nrow(step_found), nrow(step_weighting),
+    nrow(schools)
+  )
+) |>
+  mutate(lost = lag(schools) - schools)
+
+# show the empty "lost" cell of the first row as blank instead of NA
+options(knitr.kable.NA = "")
+knitr::kable(sample_flow)
+```
+
+We keep `r format(nrow(schools), big.mark = ",")` of the `r format(nrow(advice_clean), big.mark = ",")` regular primary schools (`r scales::percent(nrow(schools) / nrow(advice_clean))`). The largest loss comes from schools with more than one location, either in the DUO files or in the school weighting file (`r (nrow(step_levels) - nrow(step_single)) + (nrow(step_found) - nrow(step_weighting))` schools together).
+
+### Histograms of variables
+
+We first looked at the distribution of the variables we will work with.
+
+```{r exploratory-plot, fig.width = 12, fig.height = 8}
+## Histogram of groep 8 size
+p_size <- ggplot(schools, aes(x = n_groep8)) +
+  geom_histogram(binwidth = 5, fill = "#1B3A5C", colour = "white") +
+  labs(
+    title = "Groep 8 size", x = "Number of groep 8 pupils",
+    y = "Number of schools"
+  )
+
+## Histogram of school weighting
+p_weighting <- ggplot(schools, aes(x = schoolweging)) +
+  geom_histogram(binwidth = 1, fill = "#2C5F8A", colour = "white") +
+  labs(
+    title = "School weighting",
+    x = "School weighting (higher = more disadvantaged)",
+    y = "Number of schools"
+  )
+
+## Histogram of the pooled test results index
+p_target <- ggplot(schools, aes(x = pct_target)) +
+  geom_histogram(binwidth = 0.05, fill = "#3B7EA1", colour = "white") +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title = "Test results (maths, reading, writing)",
+    x = "Share of results at target level", y = "Number of schools"
+  )
+
+## Histogram of HAVO+ advice
+p_havo <- ggplot(schools, aes(x = pct_havo_plus)) +
+  geom_histogram(binwidth = 0.05, fill = "#4A90C2", colour = "white") +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title = "HAVO+ advice",
+    x = "Share of pupils with HAVO+ advice", y = "Number of schools"
+  )
+
+## Histogram of mean advice
+p_mean <- ggplot(schools, aes(x = mean_advice)) +
+  geom_histogram(binwidth = 0.1, fill = "#6BA3D0", colour = "white") +
+  labs(
+    title = "Mean advice",
+    x = "Mean advice (1 = PRO ... 6 = VWO)", y = "Number of schools"
+  )
+
+## Count pupils per advice track
+advice_totals <- schools |>
+  summarise(across(all_of(track_cols), sum)) |>
+  pivot_longer(everything(), names_to = "track", values_to = "pupils") |>
+  mutate(track = factor(track, levels = track_cols, labels = track_names))
+
+## Bar chart of advice per track
+p_tracks <- ggplot(advice_totals, aes(x = pupils, y = track)) +
+  geom_col(fill = "#2F6F9F") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(title = "Advice per track", x = "Number of pupils", y = NULL)
+
+## Combine all six plots into one figure
+plot_grid(p_size, p_weighting, p_target, p_havo, p_mean, p_tracks, ncol = 3)
+```
+
+### Advice by test results and school disadvantage
+
+To answer the research question, we plotted each school's advice against its test results. Schools are split into three equal groups by school weighting, and each group has its own regression line.
+
+```{r scatter-setup}
+## Split schools into three equal groups by school weighting
+schools <- schools |>
+  mutate(
+    disadvantage = ntile(schoolweging, 3),
+    disadvantage = factor(
+      disadvantage,
+      levels = 1:3,
+      labels = c("Least disadvantaged", "Middle", "Most disadvantaged")
+    )
+  )
+
+## Set colours for the three groups (colourblind-friendly)
+disadv_colours <- c(
+  "Least disadvantaged" = "#0072B2",
+  "Middle" = "#009E73",
+  "Most disadvantaged" = "#D55E00"
+)
+
+## Set x-axis title for the pooled test results
+x_target <- "Share of results at target level (maths, reading and writing)"
+
+## Create function that makes one scatterplot
+make_scatter <- function(data, y_col, title, y_label, show_legend = FALSE) {
+  ggplot(
+    data,
+    aes(x = .data$pct_target, y = .data[[y_col]], colour = .data$disadvantage)
+  ) +
+    # one dot per school
+    geom_point(alpha = 0.15, size = 1) +
+    # one regression line per group
+    geom_smooth(method = "lm", formula = y ~ x, linewidth = 1.2) +
+    scale_colour_manual(
+      values = disadv_colours, name = "School disadvantage:"
+    ) +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    # show the full range (0-100%) on both axes
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(title = title, x = x_target, y = y_label) +
+    # legend keys without the grey confidence band
+    guides(colour = guide_legend(override.aes = list(fill = NA))) +
+    theme_minimal(base_size = 16) +
+    theme(
+      legend.position = if (show_legend) "top" else "none",
+      plot.title = element_text(face = "bold")
+    )
+}
+
+## Create function that predicts y at one value of x (at) from the regression
+## line of the least and the most disadvantaged schools
+group_fit <- function(data, y_col, at) {
+  groups <- c("Least disadvantaged", "Most disadvantaged")
+  fits <- vapply(groups, function(group) {
+    x <- data$pct_target[data$disadvantage == group]
+    y <- data[[y_col]][data$disadvantage == group]
+    # least-squares line, same as geom_smooth(method = "lm")
+    slope <- cov(x, y) / var(x)
+    mean(y) + slope * (at - mean(x))
+  }, numeric(1))
+  setNames(fits, c("least", "most"))
+}
+
+## Create function that highlights the gap between the least and the most
+## disadvantaged schools at one test result with an arrow and a label
+add_gap_label <- function(plot, fits, at, label_x, label_y, hjust) {
+  label <- paste0(
+    "At ", scales::percent(at), " of results at target level,\n",
+    "the least disadvantaged schools advise ",
+    scales::percent(fits[["least"]], accuracy = 1), " HAVO+,\n",
+    "the most disadvantaged schools ",
+    scales::percent(fits[["most"]], accuracy = 1)
+  )
+  plot +
+    # arrow between the two regression lines
+    annotate(
+      "segment",
+      x = at, xend = at, y = fits[["most"]], yend = fits[["least"]],
+      linewidth = 1,
+      arrow = arrow(ends = "both", length = unit(0.1, "inches"))
+    ) +
+    # explanation of the arrow
+    annotate(
+      "label",
+      x = label_x, y = label_y, label = label, hjust = hjust, vjust = 0.5,
+      size = 4.5, fill = "white"
+    )
+}
+
+## Create function that makes a line plot of smoothed curves only, one
+## coloured curve per group
+make_smooth <- function(data, y_col, title, y_label) {
+  ggplot(data, aes(x = .data$pct_target, y = .data[[y_col]])) +
+    # flexible curve (GAM) per group
+    geom_smooth(
+      aes(colour = .data$disadvantage, fill = .data$disadvantage),
+      method = "gam", formula = y ~ s(x, bs = "cs"), linewidth = 1.2,
+      alpha = 0.2
+    ) +
+    scale_colour_manual(values = disadv_colours, name = NULL) +
+    scale_fill_manual(values = disadv_colours, name = NULL) +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    # same axes as the scatterplot above
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(title = title, x = x_target, y = y_label) +
+    theme_minimal(base_size = 16) +
+    theme(legend.position = "top", plot.title = element_text(face = "bold"))
+}
+
+## Create one legend for the grid of track plots (coloured square + text)
+legend_data <- tibble(
+  label = names(disadv_colours),
+  x = c(0.30, 0.55, 0.68)
+)
+legend_row <- ggplot(legend_data) +
+  # coloured squares
+  geom_point(
+    aes(x = x, y = 0), shape = 15, size = 9, colour = disadv_colours
+  ) +
+  # group names next to the squares
+  geom_text(aes(x = x + 0.015, y = 0, label = label), hjust = 0, size = 6) +
+  # legend title
+  annotate(
+    "text", x = 0.05, y = 0, label = "School disadvantage:",
+    hjust = 0, size = 6
+  ) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), expand = FALSE) +
+  theme_void()
+```
+
+#### Share of pupils with HAVO or higher advice
+
+We first summarised the advice as the share of pupils with HAVO-or-higher advice. In the scatterplot, the arrow highlights the gap between the least and the most disadvantaged schools at the same test results. The line plot below it shows only a smoothed curve per group, without the dots and without assuming a straight line.
+
+```{r scatter-havo, fig.width = 10, fig.height = 15}
+## Predicted HAVO+ share of the least and most disadvantaged schools at 60%
+## of results at target level
+gap_havo <- group_fit(schools, "pct_havo_plus", at = 0.6)
+
+## Gap at weak (30%) and strong (90%) results (used in the text below)
+gap_havo_low <- group_fit(schools, "pct_havo_plus", at = 0.3)
+gap_havo_high <- group_fit(schools, "pct_havo_plus", at = 0.9)
+
+## Scatterplot of HAVO+ advice by test results, with the gap marked
+p_havo <- make_scatter(
+  schools, "pct_havo_plus",
+  title = "Pupils with HAVO or higher advice by school test results",
+  y_label = "Share of pupils with HAVO+ advice", show_legend = TRUE
+) |>
+  add_gap_label(gap_havo, at = 0.6, label_x = 0.98, label_y = 0.1, hjust = 1)
+
+## Line plot of smoothed curves for all schools and per group
+p_havo_smooth <- make_smooth(
+  schools, "pct_havo_plus",
+  title = "Smoothed curves per group",
+  y_label = "Share of pupils with HAVO+ advice"
+)
+
+## Put the line plot under the scatterplot
+plot_grid(p_havo, p_havo_smooth, ncol = 1, align = "v")
+```
+
+**What we see:** at the same test results, more disadvantaged schools give fewer HAVO+ advices. At 60% of results at target level, the least disadvantaged schools advise `r scales::percent(gap_havo[["least"]], accuracy = 1)` of their pupils HAVO or higher, the most disadvantaged schools `r scales::percent(gap_havo[["most"]], accuracy = 1)`. Among schools with weak results the groups are close together, but the lines fan out as results improve: the gap grows from `r round(100 * (gap_havo_low[["least"]] - gap_havo_low[["most"]]))` percentage points at 30% of results at target level to `r round(100 * (gap_havo_high[["least"]] - gap_havo_high[["most"]]))` percentage points at 90%. The smoothed curves show the same pattern without assuming straight lines.
+
+#### Mean advice (1 = PRO to 6 = VWO)
+
+Next, we summarised the advice as the mean advice per school, with tracks scored from 1 (PRO) to 6 (VWO) and split advice in between (e.g. HAVO/VWO = 5.5). We would like feedback on whether mean advice is a suitable summary, because it assumes equal distances between tracks which might not be appropriate.
+
+```{r scatter-mean, fig.width = 10, fig.height = 7.5}
+## Scatterplot of mean advice by test results (1 = PRO ... 6 = VWO)
+make_scatter(
+  schools, "mean_advice",
+  title = "Average advice per school by school test results",
+  y_label = "Mean advice of the school", show_legend = TRUE
+) +
+  scale_y_continuous(
+    breaks = 1:6,
+    labels = c("PRO", "VMBO-B", "VMBO-K", "VMBO-GT", "HAVO", "VWO")
+  ) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(1, 6))
+
+## Predicted mean advice at 30% and 90% of results at target level (used in
+## the text below)
+gap_mean_low <- group_fit(schools, "mean_advice", at = 0.3)
+gap_mean_high <- group_fit(schools, "mean_advice", at = 0.9)
+```
+
+**What we see:** the mean advice shows the same pattern as the HAVO+ share, but weaker. At the same test results, more disadvantaged schools give a lower mean advice, and the gap between the least and the most disadvantaged schools grows only slightly with test results: from `r round(gap_mean_low[["least"]] - gap_mean_low[["most"]], 2)` points at 30% of results at target level to `r round(gap_mean_high[["least"]] - gap_mean_high[["most"]], 2)` points at 90%, on the 1 (PRO) to 6 (VWO) scale.
+
+#### Six main tracks
+
+Finally, we looked at the share of pupils in each of six main tracks (split advice counted as the lower track). At the same test results, it looks like more disadvantaged schools give more advice in the lower tracks (PRO to VMBO-K) and less VWO advice, especially among schools with high results. Visually, however, these figures are hard to read and navigate. We also tried showing all ten categories in the data, with each split advice as its own track, but that made the figures harder to read without adding much information.
+
+```{r scatter-six, fig.width = 14, fig.height = 19}
+## Compute share per main track (split advice counts as the lower track)
+six_long <- schools |>
+  transmute(
+    INSTELLINGSCODE, disadvantage, pct_target,
+    PRO = PRO / n_groep8,
+    `VMBO-B` = (VMBO_B + VMBO_B_K) / n_groep8,
+    `VMBO-K` = (VMBO_K + VMBO_K_GT) / n_groep8,
+    `VMBO-GT` = (VMBO_GT + VMBO_GT_HAVO) / n_groep8,
+    HAVO = (HAVO + HAVO_VWO) / n_groep8,
+    VWO = VWO / n_groep8
+  ) |>
+  # one row per school and track
+  pivot_longer(PRO:VWO, names_to = "track", values_to = "advice_share")
+
+## Scatterplot of each main track by test results
+six_plots <- lapply(
+  c("PRO", "VMBO-B", "VMBO-K", "VMBO-GT", "HAVO", "VWO"),
+  function(track_name) {
+    make_scatter(
+      filter(six_long, .data$track == track_name), "advice_share",
+      title = paste("Pupils with", track_name, "advice"),
+      y_label = paste("Share of pupils with", track_name, "advice")
+    )
+  }
+)
+
+## Combine legend and the six plots (3 rows x 2 columns)
+six_grid <- plot_grid(plotlist = six_plots, ncol = 2)
+plot_grid(legend_row, six_grid, ncol = 1, rel_heights = c(0.03, 1))
+```
+
+### First statistical test
+
+To check whether the different slopes in the plots are more than noise, we fitted a linear regression of the HAVO+ share on test results, school weighting and their interaction. A negative interaction means that test results translate into less HAVO+ advice at more disadvantaged schools.
+
+```{r model}
+## Centre school weighting and test results on their means and express test
+## results in steps of 10 percentage points, so the coefficients are easy to
+## read (intercept = average school)
+model_data <- schools |>
+  mutate(
+    weighting_c = schoolweging - mean(schoolweging),
+    target_10 = (pct_target - mean(pct_target)) * 10,
+    maths_10 = (pct_maths_1s - mean(pct_maths_1s)) * 10,
+    reading_10 = (pct_reading_2f - mean(pct_reading_2f)) * 10,
+    writing_10 = (pct_writing_2f - mean(pct_writing_2f)) * 10,
+    havo_plus_pp = pct_havo_plus * 100
+  )
+
+## Regression with an interaction between test results and school weighting
+model_target <- lm(havo_plus_pp ~ target_10 * weighting_c, data = model_data)
+coefs <- summary(model_target)$coefficients
+
+## Show the model as a readable table
+knitr::kable(
+  tibble(
+    term = c(
+      "Intercept (average results and school weighting)",
+      "Test results (+10 pp of results at target level)",
+      "School weighting (+1 point, at average results)",
+      "Test results x school weighting"
+    ),
+    estimate = round(coefs[, "Estimate"], 2),
+    std_error = round(coefs[, "Std. Error"], 2),
+    p_value = scales::pvalue(coefs[, "Pr(>|t|)"])
+  ),
+  col.names = c("Term", "Estimate (pp HAVO+)", "SE", "p")
+)
+
+## Slope for a school one standard deviation more disadvantaged than average
+sd_weighting <- sd(schools$schoolweging)
+slope_avg <- coefs["target_10", "Estimate"]
+slope_disadv <- slope_avg +
+  sd_weighting * coefs["target_10:weighting_c", "Estimate"]
+
+## Check: the same model for each subject separately (interaction only)
+subject_check <- tibble(
+  subject = c("Maths (1S)", "Reading (2F)", "Writing (2F)"),
+  predictor = c("maths_10", "reading_10", "writing_10")
+) |>
+  mutate(
+    interaction = map_dbl(predictor, function(x) {
+      model <- lm(
+        reformulate(c(x, "weighting_c", paste0(x, ":weighting_c")),
+          response = "havo_plus_pp"
+        ),
+        data = model_data
+      )
+      coef(model)[[paste0(x, ":weighting_c")]]
+    })
+  )
+```
+
+The interaction is `r round(coefs["target_10:weighting_c", "Estimate"], 2)` (p `r scales::pvalue(coefs["target_10:weighting_c", "Pr(>|t|)"], add_p = FALSE)`). For a school with an average school weighting, 10 percentage points more results at target level go together with `r round(slope_avg, 1)` percentage points more HAVO+ advice. For a school one standard deviation (`r round(sd_weighting, 1)` points) more disadvantaged than average, this is only `r round(slope_disadv, 1)` percentage points. Fitting the same model for each subject separately gives a negative interaction every time (maths `r sprintf("%.2f", subject_check$interaction[1])`, reading `r sprintf("%.2f", subject_check$interaction[2])`, writing `r sprintf("%.2f", subject_check$interaction[3])`), so pooling the subjects does not create the pattern. This is a first, unweighted model: every school counts equally, however many pupils it has, and the "<5" counts are set to 2.5.
+
+## What we learned so far
+
+- Schools with the same test results do **not** give the same advice: at equal results, more disadvantaged schools give fewer HAVO+ advices and a lower mean advice.
+- The gap grows with test results: it is small among schools with weak results and largest among schools with strong results.
+- The pattern is the same for the HAVO+ share and the six main tracks (and weaker for the mean advice), and for maths, reading and writing separately.
+- Many schools are small (`r sum(schools$n_groep8 < 10)` have fewer than 10 groep 8 pupils), which causes the horizontal stripes of dots at simple fractions such as 50% and 100%. Their percentages are noisy.
+
+## Questions for feedback
+
+1. Is the mean advice a suitable summary, given that it assumes equal distances between tracks? Or should we stick to the HAVO+ share?
+2. We do not count the split advice VMBO-GT/HAVO as HAVO+. It is a large category, so this choice matters. Would you count it?
+3. We pool maths, reading and writing into one test-results index. Is this a sensible choice, or would you expect separate results per subject?
+4. How should we handle small schools: weight the model by the number of groep 8 pupils, or leave out schools below a minimum size?
+5. For an audience of secondary schools, is splitting schools into three groups clearer than showing school weighting as a continuous variable?
+6. We plan to check whether the results change when we replace "<5" with 1 or 4 instead of 2.5. Are there other robustness checks you would expect?

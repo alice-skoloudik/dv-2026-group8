@@ -1,27 +1,17 @@
-<!--
-  Replace the title, group members, research question and "About this
-  project" below with your own project description. Keep the "Cloning" and
-  "Reproducing" sections, and update them if you change how the project
-  runs. Keep it short — a few lines per section is enough. This README is the
-  front page of your repo, not the report itself (that's in report/);
-  it just orients anyone (including us, grading) opening the repo for the
-  first time.
--->
-
-# Your Project Title
+# Same test results, different advice?
 
 **Group members:**
 
 - Alice Školoudíková
 - Robin Lux
 
-**Research question:** One sentence stating what you're investigating.
+**Research question:** Do schools with similar test results give similar secondary-school advice, regardless of how disadvantaged their student population is?
 
-**Level:** Analytics / Inference / Prediction 
+**Level:** Inference
 
 ## About this project
 
-A short paragraph (3-5 sentences) on what this project looks at in the DUO doorstroomtoets (transfer test) data, and what you're trying to communicate with your final visualization.
+This project uses the DUO doorstroomtoets (transfer test) data for 2024-2025 to compare primary schools' secondary-school advice with their pupils' test results. We relate each school's advice (e.g. the share of pupils advised HAVO or higher) to the share of its pupils reaching the target reference levels in maths (1S) and reading (2F), and test whether this relationship depends on the school weighting (*schoolweging*), a measure of how disadvantaged the pupil population is. Our final visualization is aimed at secondary schools and should show whether two schools with the same test results give the same advice, regardless of who their pupils are.
 
 ## Cloning this project
 
@@ -38,4 +28,4 @@ RStudio opens the project, with a `Git` tab next to your `Environment` pane. Ful
 1. Open the project in RStudio (double-click its `.Rproj` file, or clone it as described above).
 2. Run `scripts/00-packages.R` to install and load the packages this project uses.
 3. Run `scripts/01-get-data.R` once to download the data into `data/raw/`.
-4. Knit `report/DV-Assignment2-Part2-GroupX.Rmd` (the final report). Knitting runs both scripts above for you.
+4. Knit `report/DV-Assignment2-Part2-Group8.Rmd` (the final report). Knitting runs both scripts above for you.

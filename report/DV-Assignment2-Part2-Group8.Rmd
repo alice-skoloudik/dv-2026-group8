@@ -50,6 +50,232 @@ source("../scripts/00-packages.R")
 source(here("scripts", "01-get-data.R"))
 ```
 
+```{r data-prep, include = FALSE}
+## Same data preparation as in Part 1 (see there for the sample flow)
+
+## Set value for "<5" to 2.5
+hidden_value <- 2.5
+
+## Create function that turns "<5" into 2.5 and text into numbers
+to_number <- function(x) {
+  x <- as.character(x)
+  x[x == "<5"] <- hidden_value
+  as.numeric(x)
+}
+
+## Order names of the ten advice tracks
+track_cols <- c(
+  "PRO", "VMBO_B", "VMBO_B_K", "VMBO_K", "VMBO_K_GT",
+  "VMBO_GT", "VMBO_GT_HAVO", "HAVO", "HAVO_VWO", "VWO"
+)
+track_names <- c(
+  "PRO", "VMBO-B", "VMBO-B/K", "VMBO-K", "VMBO-K/GT",
+  "VMBO-GT", "VMBO-GT/HAVO", "HAVO", "HAVO/VWO", "VWO"
+)
+
+## Clean reference levels for maths, reading and writing
+levels_clean <- referentieniveaus |>
+  # filter out special primary schools
+  filter(SOORT_PO == "Bo") |>
+  # turn pupil counts into numbers
+  mutate(across(
+    c(
+      REKENEN_LAGER1F, REKENEN_1F, REKENEN_1S, LV_LAGER1F, LV_1F, LV_2F,
+      TV_LAGER1F, TV_1F, TV_2F
+    ),
+    to_number
+  )) |>
+  # count pupils and compute share at target level per subject
+  mutate(
+    n_maths = REKENEN_LAGER1F + REKENEN_1F + REKENEN_1S,
+    n_reading = LV_LAGER1F + LV_1F + LV_2F,
+    n_writing = TV_LAGER1F + TV_1F + TV_2F,
+    pct_maths_1s = REKENEN_1S / n_maths,
+    pct_reading_2f = LV_2F / n_reading,
+    pct_writing_2f = TV_2F / n_writing,
+    # pooled index: share of all maths, reading and writing results that
+    # reach the target level
+    pct_target = (REKENEN_1S + LV_2F + TV_2F) /
+      (n_maths + n_reading + n_writing)
+  ) |>
+  # keep only the columns we need
+  select(
+    INSTELLINGSCODE, VESTIGINGSCODE, PROVINCIE, GEMEENTENAAM,
+    n_maths, n_reading, n_writing,
+    pct_maths_1s, pct_reading_2f, pct_writing_2f, pct_target
+  )
+
+## Clean school advice
+advice_clean <- schooladviezen |>
+  # filter out special primary schools
+  filter(SOORT_PO == "Bo") |>
+  # turn pupil counts into numbers
+  mutate(across(all_of(track_cols), to_number)) |>
+  # count pupils, share of HAVO+ advice, mean advice (PRO = 1 ... VWO = 6)
+  mutate(
+    n_groep8 = PRO + VMBO_B + VMBO_B_K + VMBO_K + VMBO_K_GT +
+      VMBO_GT + VMBO_GT_HAVO + HAVO + HAVO_VWO + VWO,
+    pct_havo_plus = (HAVO + HAVO_VWO + VWO) / n_groep8,
+    mean_advice = (
+      1 * PRO + 2 * VMBO_B + 2.5 * VMBO_B_K + 3 * VMBO_K +
+        3.5 * VMBO_K_GT + 4 * VMBO_GT + 4.5 * VMBO_GT_HAVO + 5 * HAVO +
+        5.5 * HAVO_VWO + 6 * VWO
+    ) / n_groep8
+  ) |>
+  # keep only the columns we need
+  select(
+    INSTELLINGSCODE, VESTIGINGSCODE, all_of(track_cols),
+    n_groep8, pct_havo_plus, mean_advice
+  )
+
+## Clean school weighting
+weighting_all <- schoolweging |>
+  # drop rows without a school weighting (e.g. language classes, AZC
+  # schools); they have no pupils and would otherwise count as an extra
+  # location below
+  filter(!is.na(schoolweging)) |>
+  # take school ID from OVT
+  mutate(INSTELLINGSCODE = str_split_i(OVT, "\\|", 1)) |>
+  # count locations per school
+  add_count(INSTELLINGSCODE, name = "n_locations")
+
+## Keep schools with one location in the school weighting file
+weighting_clean <- weighting_all |>
+  filter(n_locations == 1) |>
+  # keep only the columns we need
+  select(INSTELLINGSCODE, schoolweging, spreiding)
+
+## Join advice with reference levels
+step_levels <- advice_clean |>
+  inner_join(levels_clean, by = c("INSTELLINGSCODE", "VESTIGINGSCODE"))
+
+## Filter out schools with more than one location
+step_single <- step_levels |>
+  add_count(INSTELLINGSCODE, name = "n_locations") |>
+  filter(n_locations == 1)
+
+## Keep schools that have a school weighting
+step_found <- step_single |>
+  semi_join(weighting_all, by = "INSTELLINGSCODE")
+
+## Join with school weighting (one location in the weighting file only)
+step_weighting <- step_found |>
+  inner_join(weighting_clean, by = "INSTELLINGSCODE")
+
+## Filter out schools with no pupils in reference levels or advice
+schools <- step_weighting |>
+  filter(n_maths > 0, n_reading > 0, n_writing > 0, n_groep8 > 0)
+
+## Create table of schools left after each step
+sample_flow <- tibble(
+  step = c(
+    "All schools in advice file",
+    "Regular schools only",
+    "Matched to reference levels",
+    "One location in DUO files",
+    "Has a school weighting",
+    "One location in school weighting file",
+    "Pupils in reference levels and advice"
+  ),
+  schools = c(
+    nrow(schooladviezen), nrow(advice_clean), nrow(step_levels),
+    nrow(step_single), nrow(step_found), nrow(step_weighting),
+    nrow(schools)
+  )
+) |>
+  mutate(lost = lag(schools) - schools)
+
+
+## Split schools into three equal groups by school weighting
+schools <- schools |>
+  mutate(
+    disadvantage = ntile(schoolweging, 3),
+    disadvantage = factor(
+      disadvantage,
+      levels = 1:3,
+      labels = c("Least disadvantaged", "Middle", "Most disadvantaged")
+    )
+  )
+
+## Set colours for the three groups (colourblind-friendly)
+disadv_colours <- c(
+  "Least disadvantaged" = "#0072B2",
+  "Middle" = "#009E73",
+  "Most disadvantaged" = "#D55E00"
+)
+
+## Set x-axis title for the pooled test results
+x_target <- "Share of results at target level (maths, reading and writing)"
+
+## Create function that makes one scatterplot
+make_scatter <- function(data, y_col, title, y_label, show_legend = FALSE) {
+  ggplot(
+    data,
+    aes(x = .data$pct_target, y = .data[[y_col]], colour = .data$disadvantage)
+  ) +
+    # one dot per school
+    geom_point(alpha = 0.15, size = 1) +
+    # one regression line per group
+    geom_smooth(method = "lm", formula = y ~ x, linewidth = 1.2) +
+    scale_colour_manual(
+      values = disadv_colours, name = "School disadvantage:"
+    ) +
+    scale_x_continuous(labels = scales::percent) +
+    scale_y_continuous(labels = scales::percent) +
+    # show the full range (0-100%) on both axes
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(title = title, x = x_target, y = y_label) +
+    # legend keys without the grey confidence band
+    guides(colour = guide_legend(override.aes = list(fill = NA))) +
+    theme_minimal(base_size = 16) +
+    theme(
+      legend.position = if (show_legend) "top" else "none",
+      plot.title = element_text(face = "bold")
+    )
+}
+
+## Create function that predicts y at one value of x (at) from the regression
+## line of each group (by default the least and the most disadvantaged)
+group_fit <- function(data, y_col, at,
+                      groups = c("Least disadvantaged", "Most disadvantaged")) {
+  fits <- vapply(groups, function(group) {
+    x <- data$pct_target[data$disadvantage == group]
+    y <- data[[y_col]][data$disadvantage == group]
+    # least-squares line, same as geom_smooth(method = "lm")
+    slope <- cov(x, y) / var(x)
+    mean(y) + slope * (at - mean(x))
+  }, numeric(1))
+  fits
+}
+
+## Create function that highlights the gap between the least and the most
+## disadvantaged schools at one test result with an arrow and a label
+add_gap_label <- function(plot, fits, at, label_x, label_y, hjust) {
+  label <- paste0(
+    "At ", scales::percent(at), " of results at target level,\n",
+    "the least disadvantaged schools advise ",
+    scales::percent(fits[["Least disadvantaged"]], accuracy = 1), " HAVO+,\n",
+    "the most disadvantaged schools ",
+    scales::percent(fits[["Most disadvantaged"]], accuracy = 1)
+  )
+  plot +
+    # arrow between the two regression lines
+    annotate(
+      "segment",
+      x = at, xend = at,
+      y = fits[["Most disadvantaged"]], yend = fits[["Least disadvantaged"]],
+      linewidth = 1,
+      arrow = arrow(ends = "both", length = unit(0.1, "inches"))
+    ) +
+    # explanation of the arrow
+    annotate(
+      "label",
+      x = label_x, y = label_y, label = label, hjust = hjust, vjust = 0.5,
+      size = 4.5, fill = "white"
+    )
+}
+```
+
 ## Research question
 
 *What are you investigating, and why does it matter? Who is the target audience for your final visualization, and how does that shape your choices? You can start from what you wrote in Part 1.*
@@ -65,7 +291,154 @@ source(here("scripts", "01-get-data.R"))
 
 *Your final, explanatory visualization goes below. Include a short write-up: what does it communicate, why is this the best way to communicate it, and how robust is the finding?*
 
-```{r final-plot}
+```{r final-plot, fig.width = 16, fig.height = 15}
+## ---- Top left: national averages -------------------------------------------
+
+## National shares over all pupils of all regular primary schools (not only
+## our analysis sample): HAVO+ advice and test results at target level
+national_havo <- advice_clean |>
+  summarise(share = sum(HAVO + HAVO_VWO + VWO) / sum(n_groep8)) |>
+  pull(share)
+national_target <- levels_clean |>
+  summarise(
+    share = sum(
+      pct_maths_1s * n_maths + pct_reading_2f * n_reading +
+        pct_writing_2f * n_writing,
+      na.rm = TRUE
+    ) / sum(n_maths + n_reading + n_writing)
+  ) |>
+  pull(share)
+
+national <- tibble(
+  measure = c(
+    "Test results at\ntarget level",
+    "Pupils with\nHAVO+ advice"
+  ),
+  share = c(national_target, national_havo)
+) |>
+  # first row on top
+  mutate(measure = factor(measure, levels = rev(measure)))
+
+## Bar chart: each bar on a grey 100% track, value printed next to it
+p_national <- ggplot(national, aes(y = measure)) +
+  geom_col(aes(x = 1), fill = "grey90", width = 0.6) +
+  geom_col(aes(x = share), fill = "#1B3A5C", width = 0.6) +
+  geom_text(
+    aes(x = share, label = scales::percent(share, accuracy = 1)),
+    hjust = 1.15, colour = "white", fontface = "bold", size = 7
+  ) +
+  scale_x_continuous(
+    labels = scales::percent, limits = c(0, 1), expand = c(0, 0)
+  ) +
+  labs(
+    title = "The Netherlands on average",
+    subtitle = "All pupils of regular primary schools, 2024-2025",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 14, colour = "black")
+  )
+
+## ---- Top right: 100 pupils per group ---------------------------------------
+
+## HAVO+ share each group's regression line predicts for a school whose test
+## results equal the national average
+group_havo <- group_fit(
+  schools, "pct_havo_plus",
+  at = national_target, groups = levels(schools$disadvantage)
+)
+group_people <- tibble(
+  disadvantage = factor(names(group_havo), levels = names(group_havo)),
+  havo = group_havo,
+  n_havo = round(100 * group_havo)
+)
+
+## Outline of one pupil icon (head + shoulders) centred on (0, 0) in a
+## 1 x 1 cell
+circle <- seq(0, 2 * pi, length.out = 30)
+shoulders <- seq(0, pi, length.out = 20)
+pupil_head <- tibble(
+  x = 0.15 * cos(circle), y = 0.24 + 0.15 * sin(circle), part = "head"
+)
+pupil_body <- tibble(
+  x = c(0.3 * cos(shoulders), -0.3, 0.3),
+  y = c(-0.12 + 0.28 * sin(shoulders), -0.42, -0.42),
+  part = "body"
+)
+pupil_shape <- bind_rows(pupil_head, pupil_body)
+
+## 100 pupils per group on a 10 x 10 grid (filled row by row from the top
+## left); the first n_havo of them get HAVO+ advice
+people <- group_people |>
+  cross_join(tibble(pupil = 1:100)) |>
+  mutate(
+    col = (pupil - 1) %% 10,
+    row = 9 - (pupil - 1) %/% 10,
+    status = if_else(pupil <= n_havo, as.character(disadvantage), "other")
+  ) |>
+  cross_join(pupil_shape) |>
+  mutate(x = col + x, y = row + y, id = paste(pupil, part))
+
+## Percentage printed under each grid
+people_labels <- group_people |>
+  mutate(label = paste0(n_havo, " of 100 pupils\nget HAVO+ advice"))
+
+p_people <- ggplot(people, aes(x = x, y = y)) +
+  geom_polygon(aes(group = id, fill = status)) +
+  geom_text(
+    data = people_labels, aes(x = 4.5, y = -1.6, label = label),
+    size = 5.5, lineheight = 0.9, fontface = "bold",
+    colour = disadv_colours[as.character(people_labels$disadvantage)]
+  ) +
+  facet_wrap(~disadvantage) +
+  scale_fill_manual(values = c(disadv_colours, other = "grey85")) +
+  coord_fixed(ylim = c(-2.4, 9.5), clip = "off") +
+  labs(
+    title = paste0(
+      "100 pupils at a school where ",
+      scales::percent(national_target, accuracy = 1),
+      " of test results reach the target level"
+    ),
+    subtitle = paste(
+      "Same test results as the national average, but how many get",
+      "HAVO+ advice\ndepends on how disadvantaged the school is"
+    )
+  ) +
+  theme_void(base_size = 16) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(margin = margin(t = 4, b = 10)),
+    strip.text = element_text(face = "bold", size = 15, margin = margin(b = 6)),
+    panel.spacing = unit(1.5, "lines")
+  )
+
+## ---- Bottom: HAVO+ advice by test results ----------------------------------
+
+## Scatterplot from Part 1, with the gap between the least and the most
+## disadvantaged schools marked at 60% of results at target level
+gap_havo <- group_fit(schools, "pct_havo_plus", at = 0.6)
+p_havo <- make_scatter(
+  schools, "pct_havo_plus",
+  title = "Pupils with HAVO or higher advice by school test results",
+  y_label = "Share of pupils with HAVO+ advice", show_legend = TRUE
+) |>
+  add_gap_label(gap_havo, at = 0.6, label_x = 0.98, label_y = 0.1, hjust = 1)
+
+## ---- Combine ---------------------------------------------------------------
+
+top_row <- plot_grid(
+  p_national, p_people,
+  nrow = 1, rel_widths = c(1, 2)
+)
+plot_grid(
+  top_row, p_havo,
+  ncol = 1, rel_heights = c(1, 1.15)
+)
 ```
 
 ## Conclusion

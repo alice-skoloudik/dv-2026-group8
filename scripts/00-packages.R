@@ -25,6 +25,9 @@ packages <- c(
   "here", # file paths that work from the project root AND from report/
   "readODS", # reads the schoolweging .ods spreadsheet
   "cowplot", # combining several ggplots into one figure (plot_grid())
+  "patchwork", # layout of the final multi-panel figure
+  "showtext", # Google fonts in plots (font_add_google())
+  "ggtext", # coloured words in plot titles (element_markdown())
   "scales", # nicer axis labels (percentages, thousands separators)
   "plotly", # interactive plots - ggplotly() turns a ggplot interactive
   "htmlwidgets", # saving an interactive plot as its own .html file

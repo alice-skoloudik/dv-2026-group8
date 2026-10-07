@@ -235,15 +235,20 @@ make_scatter <- function(data, y_col, title, y_label, show_legend = FALSE) {
 }
 
 ## Create function that predicts y at one value of x (at) from the regression
-## line of each group (by default the least and the most disadvantaged)
+## line of each group (by default the least and the most disadvantaged),
+## weighted by the number of groep 8 pupils
 group_fit <- function(data, y_col, at,
                       groups = c("Least disadvantaged", "Most disadvantaged")) {
   fits <- vapply(groups, function(group) {
-    x <- data$pct_target[data$disadvantage == group]
-    y <- data[[y_col]][data$disadvantage == group]
-    # least-squares line, same as geom_smooth(method = "lm")
-    slope <- cov(x, y) / var(x)
-    mean(y) + slope * (at - mean(x))
+    in_group <- data$disadvantage == group
+    group_data <- data.frame(
+      x = data$pct_target[in_group],
+      y = data[[y_col]][in_group],
+      pupils = data$n_groep8[in_group]
+    )
+    # weighted least-squares line: schools with more pupils count more
+    fit <- lm(y ~ x, data = group_data, weights = group_data$pupils)
+    predict(fit, data.frame(x = at))
   }, numeric(1))
   fits
 }
@@ -291,7 +296,7 @@ add_gap_label <- function(plot, fits, at, label_x, label_y, hjust) {
 
 *Your final, explanatory visualization goes below. Include a short write-up: what does it communicate, why is this the best way to communicate it, and how robust is the finding?*
 
-```{r final-plot, fig.width = 16, fig.height = 15, fig.showtext = TRUE}
+```{r final-plot, fig.width = 16, fig.height = 21, fig.showtext = TRUE}
 ## ---- Shared style ----------------------------------------------------------
 
 ## One font for the whole figure (downloaded from Google Fonts)
@@ -304,7 +309,15 @@ muted <- "#4F4F4F"
 dot_grey <- "#B8B8B8"
 blue <- "#0072B2"
 orange <- "#D55E00"
+middle_grey <- "#8A8A8A"
 gap_fill <- "#F6E3D4"
+
+## One colour per disadvantage group (used in panels 1 and 3)
+line_colours <- c(
+  "Least disadvantaged" = blue,
+  "Middle" = middle_grey,
+  "Most disadvantaged" = orange
+)
 
 ## Shared theme: white background, light horizontal gridlines only
 theme_story <- function() {
@@ -321,7 +334,7 @@ theme_story <- function() {
       panel.grid.major.x = element_blank(),
       panel.grid.minor = element_blank(),
       panel.grid.major.y = element_line(colour = "#ECECEC", linewidth = 0.4),
-      plot.margin = margin(10, 20, 10, 10)
+      plot.margin = margin(20, 30, 40, 20)
     )
 }
 
@@ -329,11 +342,13 @@ theme_story <- function() {
 pct_axis <- function(name) {
   scale_x_continuous(
     name = name, labels = scales::percent, limits = c(0, 1),
-    breaks = seq(0, 1, 0.2), expand = expansion(mult = 0.02)
+    breaks = seq(0, 1, 0.2), expand = expansion(mult = 0.02),
+    # keep arrows that end outside the plot
+    oob = scales::oob_keep
   )
 }
-x_title <- "Share of test results at target level"
-y_title <- "HAVO+ advice"
+x_title <- "Share of pupils reaching target level"
+y_title <- "Share of pupils receiving HAVO+ advice"
 
 ## ---- Numbers used in all three panels --------------------------------------
 
@@ -350,52 +365,125 @@ national_target <- levels_clean |>
   pull(share)
 national_label <- scales::percent(national_target, accuracy = 1)
 
+## HAVO+ share the regression line of the advantaged and the disadvantaged
+## schools predicts at the national average (used in panels 1 and 2)
+fits_avg <- group_fit(schools, "pct_havo_plus", at = national_target)
+
 ## ---- Panel 1: all schools ---------------------------------------------------
 
-## Average HAVO+ share per band of 10 percentage points of test results
+## Average HAVO+ share per band of 10 percentage points of test results,
+## weighted by the number of groep 8 pupils
 bands <- schools |>
   mutate(band = cut(pct_target, seq(0, 1, 0.1), include.lowest = TRUE)) |>
   group_by(band) |>
   summarise(
-    x = mean(pct_target), y = mean(pct_havo_plus), n = n(), .groups = "drop"
+    x = weighted.mean(pct_target, n_groep8),
+    y = weighted.mean(pct_havo_plus, n_groep8),
+    n = n(), .groups = "drop"
   ) |>
   # leave out bands with very few schools
   filter(n >= 20)
 
+## Label at the right end of the line
+line_label <- slice_max(bands, x, n = 1)
+
+## Where the arrows end, just right of panel 1 (next to the grids of panel 2)
+arrow_end_x <- 1.42
+arrow_end_y <- c("Least disadvantaged" = 0.69, "Most disadvantaged" = 0.24)
+
+## Predicted HAVO+ share of the advantaged and the disadvantaged schools at
+## the national average (the numbers shown in panel 2)
+avg_points <- tibble(
+  disadvantage = c("Least disadvantaged", "Most disadvantaged"),
+  x = national_target,
+  y = unname(fits_avg)
+)
+
 p1 <- ggplot(schools, aes(x = pct_target, y = pct_havo_plus)) +
-  geom_vline(
-    xintercept = national_target, linetype = "dashed", colour = muted
+  # one light dot per school, size = number of groep 8 pupils
+  geom_point(
+    aes(size = n_groep8),
+    colour = dot_grey, alpha = 0.3, stroke = 0
   ) +
-  geom_point(colour = dot_grey, alpha = 0.4, size = 1.1, stroke = 0) +
-  geom_line(data = bands, aes(x = x, y = y), colour = ink, linewidth = 1.1) +
+  # national average on top of the dots, in dark ink so it stands out
+  geom_vline(
+    xintercept = national_target, linetype = "dashed", colour = ink,
+    linewidth = 0.9
+  ) +
+  geom_line(data = bands, aes(x = x, y = y), colour = ink, linewidth = 0.9) +
   geom_point(data = bands, aes(x = x, y = y), colour = ink, size = 2.2) +
+  # arrows from the national average to the pupil grids in panel 2
   annotate(
-    "text",
-    x = national_target - 0.015, y = 0.99,
-    label = paste("National average", national_label),
-    hjust = 1, size = 5.2, colour = muted, family = "inter"
+    "curve",
+    x = national_target + 0.01, y = fits_avg[["Least disadvantaged"]],
+    xend = arrow_end_x, yend = arrow_end_y[["Least disadvantaged"]],
+    curvature = -0.15, colour = blue, linewidth = 1,
+    arrow = arrow(length = unit(0.15, "inches"), type = "closed")
+  ) +
+  annotate(
+    "curve",
+    x = national_target + 0.01, y = fits_avg[["Most disadvantaged"]],
+    xend = arrow_end_x, yend = arrow_end_y[["Most disadvantaged"]],
+    curvature = 0.25, colour = orange, linewidth = 1,
+    arrow = arrow(length = unit(0.15, "inches"), type = "closed")
+  ) +
+  # points at the national average, where the arrows start
+  geom_point(
+    data = avg_points, aes(x = x, y = y, fill = disadvantage),
+    shape = 21, size = 5, colour = "white", stroke = 1.5
+  ) +
+  # line label
+  geom_text(
+    data = line_label, aes(x = x + 0.015, y = y, label = "All schools"),
+    colour = ink, hjust = 0, size = 6, fontface = "bold", family = "inter"
+  ) +
+  scale_fill_manual(values = line_colours, guide = "none") +
+  # dot size: area grows with the number of groep 8 pupils
+  scale_size_area(
+    name = "School size (final-year pupils)", max_size = 7,
+    breaks = c(10, 50, 100),
+    guide = guide_legend(override.aes = list(alpha = 0.8))
+  ) +
+  coord_cartesian(clip = "off") +
+  # label of the national average on a white box
+  annotate(
+    "label",
+    x = national_target - 0.015, y = 0.97,
+    label = paste(national_label, "average"),
+    hjust = 1, size = 5.4, fontface = "bold", colour = ink,
+    family = "inter", fill = "white", label.size = 0
   ) +
   pct_axis(x_title) +
   scale_y_continuous(
     name = y_title, labels = scales::percent, limits = c(0, 1)
   ) +
   labs(
-    title = "1  Advice rises with test results",
-    subtitle = "Each dot is a school, the line their average"
+    title = paste0(
+      "Better test results usually mean\n",
+      "more HAVO+ advice, but schools differ"
+    )
   ) +
-  theme_story()
+  theme_story() +
+  # size legend above the plot
+  theme(
+    legend.position = "top",
+    legend.justification = "left",
+    legend.direction = "horizontal",
+    legend.title = element_text(size = 15, colour = muted),
+    legend.text = element_text(size = 14, colour = muted)
+  )
 
 ## ---- Panel 2: 100 pupils at an average school ------------------------------
 
-## HAVO+ share each group's regression line predicts at the national average
-fits_avg <- group_fit(schools, "pct_havo_plus", at = national_target)
+## One pupil grid each for the advantaged and the disadvantaged schools
 grid_groups <- tibble(
   group = factor(
-    c("Advantaged school", "Disadvantaged school"),
-    levels = c("Advantaged school", "Disadvantaged school")
+    c("More advantaged\nschools", "More disadvantaged\nschools"),
+    levels = c("More advantaged\nschools", "More disadvantaged\nschools")
   ),
   colour = c(blue, orange),
-  n_havo = round(100 * unname(fits_avg))
+  n_havo = round(100 * unname(fits_avg)),
+  label = "pupils receive\nHAVO+ advice"
 )
 
 ## Pupil icon (head + shoulders) in a 1 x 1 cell
@@ -423,47 +511,51 @@ pupils <- grid_groups |>
 
 p2 <- ggplot(pupils, aes(x = x, y = y)) +
   geom_polygon(aes(group = id, fill = fill)) +
-  # big number and group name under each grid
+  # big number and "pupils receive HAVO+ advice" to the right of each grid
   geom_text(
-    data = grid_groups, aes(x = 4.5, y = -1.9, label = n_havo, colour = colour),
-    size = 15, fontface = "bold", family = "inter"
+    data = grid_groups, aes(x = 10.5, y = 5.6, label = n_havo, colour = colour),
+    hjust = 0, size = 15, fontface = "bold", family = "inter"
   ) +
   geom_text(
-    data = grid_groups, aes(x = 4.5, y = -3.9, label = group),
-    size = 6, colour = muted, family = "inter"
+    data = grid_groups, aes(x = 10.6, y = 2.4, label = label),
+    hjust = 0, size = 6.5, colour = muted, family = "inter", lineheight = 0.9
   ) +
-  facet_wrap(~group) +
+  # grids under each other
+  facet_wrap(~group, ncol = 1) +
   scale_fill_identity() +
   scale_colour_identity() +
-  coord_fixed(ylim = c(-4.4, 15.5), clip = "off") +
+  coord_fixed(xlim = c(-0.6, 16), ylim = c(-0.7, 9.7), clip = "off") +
   labs(
-    title = "2  Same results, less HAVO+ advice",
+    title = "Same test performance,\ndifferent advice",
     subtitle = paste0(
-      "Per 100 pupils, at average test results (", national_label, ")"
+      "At the national average of\ntarget level (", national_label, ")"
     )
   ) +
   theme_story() +
   theme(
+    # larger subtitle than in the other panels
+    plot.subtitle = element_text(
+      size = 21, colour = muted, margin = margin(b = 12), lineheight = 1.05
+    ),
     axis.text = element_blank(), axis.title = element_blank(),
     panel.grid.major.y = element_blank(), strip.text = element_blank(),
-    panel.spacing = unit(1.5, "lines")
+    panel.spacing = unit(5, "lines"),
+    # extra space on the left to centre the grids in the right column
+    plot.margin = margin(20, 30, 40, 135)
   )
 
 ## ---- Panel 3: the gap grows with test results ------------------------------
 
-## Least and most disadvantaged schools only
-extremes <- schools |>
+## Regression line (with 95% CI) for the advantaged and the disadvantaged
+## schools, weighted by the number of groep 8 pupils, over the middle 98% of
+## each group's test results
+group_lines <- schools |>
   filter(disadvantage != "Middle") |>
-  mutate(disadvantage = droplevels(disadvantage))
-
-## Regression line (with 95% CI) per group, over the middle 96% of each
-## group's test results
-group_lines <- extremes |>
   group_by(disadvantage) |>
   group_modify(function(d, key) {
-    fit <- lm(pct_havo_plus ~ pct_target, data = d)
+    fit <- lm(pct_havo_plus ~ pct_target, data = d, weights = d$n_groep8)
     grid <- tibble(pct_target = seq(
-      quantile(d$pct_target, 0.02), quantile(d$pct_target, 0.98),
+      quantile(d$pct_target, 0.01), quantile(d$pct_target, 0.99),
       length.out = 50
     ))
     pred <- predict(fit, grid, interval = "confidence")
@@ -487,8 +579,8 @@ gap_band <- tibble(pct_target = gap_x) |>
     })
   )
 
-## Gap bars and labels at weak, average (as in panel 2) and strong results
-gap_points <- tibble(pct_target = c(0.42, national_target, 0.72)) |>
+## Gap bars and labels at 40%, 60% and 80% of pupils reaching target level
+gap_points <- tibble(pct_target = c(0.4, 0.6, 0.8)) |>
   mutate(
     top = map_dbl(pct_target, function(x) {
       group_fit(schools, "pct_havo_plus", at = x)[["Least disadvantaged"]]
@@ -496,7 +588,7 @@ gap_points <- tibble(pct_target = c(0.42, national_target, 0.72)) |>
     bottom = map_dbl(pct_target, function(x) {
       group_fit(schools, "pct_havo_plus", at = x)[["Most disadvantaged"]]
     }),
-    label = paste0("+", round(100 * (top - bottom)), "%")
+    label = paste0(round(100 * (top - bottom)), "-point gap")
   )
 
 ## Line labels at the right end of each line
@@ -504,18 +596,34 @@ end_labels <- group_lines |>
   group_by(disadvantage) |>
   slice_max(pct_target, n = 1) |>
   ungroup() |>
-  mutate(label = c("Advantaged", "Disadvantaged"))
+  mutate(label = c("More advantaged", "More disadvantaged"))
 
-line_colours <- c("Least disadvantaged" = blue, "Most disadvantaged" = orange)
+## Smoothed distribution of the schools' test results per group, drawn at the
+## bottom of panel 3 (same scale for both groups, highest peak = 14% of the
+## y-axis)
+density_height <- 0.14
+school_density <- schools |>
+  filter(disadvantage != "Middle") |>
+  group_by(disadvantage) |>
+  group_modify(function(d, key) {
+    dens <- density(d$pct_target, from = 0, to = 1, n = 200)
+    tibble(pct_target = dens$x, density = dens$y)
+  }) |>
+  ungroup() |>
+  mutate(density_y = density / max(density) * density_height)
 
 p3 <- ggplot(group_lines, aes(x = pct_target)) +
+  # distribution of the schools along the test results
+  geom_ribbon(
+    data = school_density,
+    aes(ymin = 0, ymax = density_y, fill = disadvantage), alpha = 0.18
+  ) +
+  geom_line(
+    data = school_density, aes(y = density_y, colour = disadvantage),
+    linewidth = 0.8
+  ) +
   geom_ribbon(
     data = gap_band, aes(ymin = bottom, ymax = top), fill = gap_fill
-  ) +
-  # the schools themselves, faint in the background
-  geom_point(
-    data = extremes, aes(y = pct_havo_plus, colour = disadvantage),
-    alpha = 0.12, size = 1.3, stroke = 0
   ) +
   geom_ribbon(
     aes(ymin = lwr, ymax = upr, fill = disadvantage), alpha = 0.25
@@ -531,7 +639,7 @@ p3 <- ggplot(group_lines, aes(x = pct_target)) +
     data = gap_points, aes(y = bottom - 0.04, label = label),
     size = 6.5, fontface = "bold", colour = ink, family = "inter",
     vjust = 1, fill = "white", label.size = 0,
-    label.padding = unit(0.12, "lines")
+    label.padding = unit(0.12, "lines"), lineheight = 0.9
   ) +
   geom_text(
     data = end_labels,
@@ -547,38 +655,36 @@ p3 <- ggplot(group_lines, aes(x = pct_target)) +
   ) +
   coord_cartesian(clip = "off") +
   labs(
-    title = "3  The gap grows with better test results",
-    subtitle = "Each dot is a school, the lines their average"
+    title = "The advice gap grows as test results improve"
   ) +
   theme_story() +
-  theme(plot.margin = margin(10, 160, 10, 10))
+  theme(plot.margin = margin(10, 230, 10, 10))
 
 ## ---- Combine ---------------------------------------------------------------
 
 headline <- paste0(
-  "Same test results, more HAVO+ advice at <span style='color:", blue,
-  "'>advantaged</span> than at <span style='color:", orange,
-  "'>disadvantaged</span> schools"
+  "At the same test performance, <span style='color:", orange,
+  "'>more disadvantaged schools</span> give less HAVO+ advice"
 )
 caption <- paste0(
-  "Data: DUO doorstroomtoets 2024-2025, ",
+  "Source: DUO doorstroomtoets 2024-2025, ",
   format(nrow(schools), big.mark = ","), " regular primary schools. ",
-  "Advantaged / disadvantaged: lowest / highest third by school weighting.\n",
-  "HAVO+ = HAVO, HAVO/VWO or VWO advice. ",
-  "Lines: 10-point band averages (1), linear fit with 95% CI (3).\n",
-  "Counts of 1-4 pupils set to 2.5.  |  ",
+  "HAVO+ includes HAVO, HAVO/VWO and VWO advice.\n",
+  "Schools are grouped into thirds by their pupils' socioeconomic ",
+  "background. Each dot is one school.\n",
   "Group 8: Alice Školouďíková, Robin Lux"
 )
 
-top_row <- (p1 | p2) + plot_layout(widths = c(1, 1.25))
+## Panels 1 and 2 next to each other, panel 3 under them at full width
+top_row <- (p1 | p2) + plot_layout(widths = c(1.45, 1))
 (top_row / p3) +
-  plot_layout(heights = c(1, 0.85)) +
+  plot_layout(heights = c(1, 1.25)) +
   plot_annotation(
     title = headline,
     caption = caption,
     theme = theme(
       plot.title = ggtext::element_markdown(
-        family = "inter", face = "bold", size = 26, colour = ink,
+        family = "inter", face = "bold", size = 25, colour = ink,
         margin = margin(b = 18)
       ),
       plot.caption = element_text(

@@ -631,7 +631,8 @@ gap_band <- tibble(pct_target = gap_x) |>
     })
   )
 
-## Gap bars and labels at 40%, 60% and 80% of pupils reaching target level
+## Gap bars and labels (relative gap) at 40%, 60% and 80% of pupils reaching
+## target level
 gap_points <- tibble(pct_target = c(0.4, 0.6, 0.8)) |>
   mutate(
     top = map_dbl(pct_target, function(x) {
@@ -640,7 +641,8 @@ gap_points <- tibble(pct_target = c(0.4, 0.6, 0.8)) |>
     bottom = map_dbl(pct_target, function(x) {
       group_fit(schools, "pct_havo_plus", at = x)[["Most disadvantaged"]]
     }),
-    label = paste0(round(100 * (top - bottom)), "-point gap")
+    # relative gap: how much more HAVO+ advice the advantaged schools give
+    label = paste0(round(100 * (top - bottom) / bottom), "% more")
   )
 
 ## Line labels at the right end of each line
@@ -681,12 +683,6 @@ interaction_p <- if (interaction_coef[["Pr(>|t|)"]] < 0.001) {
 } else {
   paste("p =", round(interaction_coef[["Pr(>|t|)"]], 3))
 }
-## Slope difference per 10 percentage points of test results
-stats_note <- paste0(
-  "The gap grows by ", round(abs(interaction_coef[["Estimate"]]) * 10, 1),
-  " percentage points\nper 10 percentage points better test results\n",
-  "(interaction, ", interaction_p, "; weighted linear regression)"
-)
 
 p3 <- ggplot(group_lines, aes(x = pct_target)) +
   # distribution of the schools along the test results (grey area, coloured
@@ -744,12 +740,6 @@ p3 <- ggplot(group_lines, aes(x = pct_target)) +
     "text", x = 1, y = 0.17, hjust = 1, colour = muted, size = 5.5,
     family = "inter", label = "How the schools' test results are spread"
   ) +
-  # statistical evidence for the growing gap
-  annotate(
-    "label", x = 0.02, y = 0.93, hjust = 0, vjust = 1, colour = ink,
-    size = 5.6, family = "inter", lineheight = 1.05, fill = "white",
-    border.colour = "#CFCFCF", label = stats_note
-  ) +
   theme_story() +
   theme(
     plot.margin = margin(30, 230, 10, 10),
@@ -769,8 +759,10 @@ caption <- paste0(
   "Source: DUO doorstroomtoets 2024-2025, ",
   format(nrow(schools), big.mark = ","), " regular primary schools. ",
   "HAVO+ includes HAVO, HAVO/VWO and VWO advice.\n",
-  "Schools are grouped into thirds by their pupils' socioeconomic ",
-  "background. Each dot is one school.\n",
+  "School weighting (schoolweging) = CBS index of pupils' expected ",
+  "educational disadvantage. Advantaged schools = the third with the lowest ",
+  "school weighting,\ndisadvantaged schools = the third with the highest. ",
+  "The middle third is not shown. Each dot is one school.\n",
   "Group 8: Alice Školouďíková, Robin Lux"
 )
 

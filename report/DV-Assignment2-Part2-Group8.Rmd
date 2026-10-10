@@ -6,6 +6,7 @@ output:
   html_document:
     toc: true
     toc_float: true
+    code_folding: hide
 ---
 
 <!--
@@ -36,7 +37,7 @@ This comment does not show up in the knitted .html, so you can leave it here.
 -->
 
 ```{r setup, include = FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 # clear environment so knitting only depends on what's in this file
 rm(list = ls())
 
@@ -53,10 +54,11 @@ source(here("scripts", "01-get-data.R"))
 ```{r data-prep, include = FALSE}
 ## Same data preparation as in Part 1 (see there for the sample flow)
 
-## Set value for "<5" to 2.5
-hidden_value <- 2.5
+## Set value for "<5" to 2.5 (the midpoint of 1-4), unless the robustness
+## check below reruns this chunk with another value
+hidden_value <- getOption("hidden_value", default = 2.5)
 
-## Create function that turns "<5" into 2.5 and text into numbers
+## Create function that turns "<5" into hidden_value and text into numbers
 to_number <- function(x) {
   x <- as.character(x)
   x[x == "<5"] <- hidden_value
@@ -185,7 +187,6 @@ sample_flow <- tibble(
 ) |>
   mutate(lost = lag(schools) - schools)
 
-
 ## Split schools into three equal groups by school weighting
 schools <- schools |>
   mutate(
@@ -283,18 +284,42 @@ add_gap_label <- function(plot, fits, at, label_x, label_y, hjust) {
 
 ## Research question
 
-*What are you investigating, and why does it matter? Who is the target audience for your final visualization, and how does that shape your choices? You can start from what you wrote in Part 1.*
+**Do schools with similar test results give similar secondary-school advice, regardless of how disadvantaged their pupils are?** (RQ3, inference level)
 
-## Exploratory process
+Our audience is the people who give the advice: groep 8 teachers, especially at disadvantaged schools. The starting track matters, and switching later is hard. If two children with the same results get different advice because of their school, teachers should see that.
 
-*Describe how you explored the data before settling on your final visualization. Include at least one exploratory plot below (this can be the one from Part 1, or an updated one), and a short note on what it told you and how it influenced your final visualization.*
+Teachers cannot be expected to know what "controlling for test results" means, so the figure makes that comparison for them. Disadvantaged schools have lower results on average, so a plain comparison would mislead. We compare schools at the same test results and count in pupils, because teachers think about the children in their class.
 
-```{r exploratory-plot}
+## Data and exploratory process
+
+We kept regular primary schools, joined advice, reference levels and school weighting (*schoolweging*), and dropped schools with several locations (no single school weighting), leaving `r format(nrow(schools), big.mark = ",")` of `r format(nrow(advice_clean), big.mark = ",")` schools.
+
+- **Test results:** one number per school, the share of all maths, reading and writing results at target level (1S for maths, 2F for reading and writing), as the question is about results as a whole.
+- **Advice:** we tried the share of pupils with HAVO or higher advice (HAVO+) and a mean advice from 1 (PRO) to 6 (VWO). Both showed the same pattern, weaker for the mean, which also treats an ordinal scale as if the tracks were equally far apart. We kept HAVO+.
+- **Hidden counts:** DUO shows counts of 1 to 4 pupils as "<5". We used 2.5 and checked 1 and 4 later.
+- **Disadvantage:** three equal groups by school weighting.
+
+```{r exploratory-plot, fig.width = 10, fig.height = 7.5}
+## Exploratory plot (from Part 1): HAVO+ advice against test results, one
+## regression line per third of the school weighting
+explore_fits <- group_fit(schools, "pct_havo_plus", at = 0.6)
+make_scatter(
+  schools, "pct_havo_plus",
+  title = "Exploratory: HAVO+ advice by test results and school disadvantage",
+  y_label = "Share of pupils with HAVO+ advice", show_legend = TRUE
+) |>
+  add_gap_label(explore_fits, at = 0.6, label_x = 0.02, label_y = 0.9, hjust = 0)
 ```
+
+What the plot showed, and what we changed:
+
+1. The lines are clearly apart. The middle group sits in between and mostly adds clutter, so we compare only the most and the least disadvantaged third.
+2. Reading a gap off two lines is the step we did not want to ask of teachers. The final figure picks one point, the national average, and shows what the lines predict there for 100 pupils.
+3. The lines move apart as results improve, so one panel shows the gap over the whole range. Small schools are noisy (stripes at 50% and 100%), so we weight by groep 8 pupils.
 
 ## Final visualization
 
-*Your final, explanatory visualization goes below. Include a short write-up: what does it communicate, why is this the best way to communicate it, and how robust is the finding?*
+**This is our final, explanatory visualization.**
 
 ```{r final-plot, fig.width = 16, fig.height = 21, fig.showtext = TRUE}
 ## ---- Shared style ----------------------------------------------------------
@@ -787,10 +812,112 @@ top_row <- (p1 | p2) + plot_layout(widths = c(1.45, 1))
   )
 ```
 
+```{r report-numbers, include = FALSE}
+## Numbers quoted in the text below the final figure
+pct <- function(x) scales::percent(x, accuracy = 1)
+avg_adv <- pct(group_avg$x[group_avg$disadvantage == "Least disadvantaged"])
+avg_dis <- pct(group_avg$x[group_avg$disadvantage == "Most disadvantaged"])
+n_adv <- round(100 * fits_avg[["Least disadvantaged"]])
+n_dis <- round(100 * fits_avg[["Most disadvantaged"]])
+gap_per_10 <- round(-10 * interaction_coef[["Estimate"]], 1)
+n_multi <- sum(sample_flow$lost[c(4, 6)])
+```
+
+The headline states the conclusion; its coloured group names are the legend.
+
+1. Better test results go with more HAVO+ advice (r = `r round(all_r, 2)`), but the groups start from different points: `r avg_adv` of results reach the target level at advantaged schools, `r avg_dis` at disadvantaged ones.
+2. At the national average (`r national_label`), the lines predict `r n_adv` out of 100 pupils with HAVO+ advice at an advantaged school and `r n_dis` at a disadvantaged one.
+3. The gap grows: advantaged schools give `r gap_points$label[1]` HAVO+ advice at 40% of results at target level and `r gap_points$label[3]` at 80%. The curves at the bottom show where schools are: disadvantaged schools with very high results are rare, so the end of the orange line rests on few schools.
+
+Everything except the message is grey. Blue and orange are colourblind-safe and mean the same groups everywhere, the national average is the only reference point, and confidence bands show how certain the lines are.
+
+**Statistical test.** A linear regression of the HAVO+ share on test results, group and their interaction, weighted by groep 8 pupils, gives an interaction of `r sprintf("%.2f", interaction_coef[["Estimate"]])` (`r interaction_p`): per 10 percentage points better results, the gap grows by about `r gap_per_10` percentage points.
+
+### Robustness
+
+```{r robustness}
+## Fit the interaction model on the least and the most disadvantaged third and
+## return the extra gap per 10 points of test results and the predicted HAVO+
+## advice of both groups at the national average
+robust_fit <- function(data, check, x_col = "pct_target", weighted = TRUE) {
+  outer <- droplevels(data[data$disadvantage != "Middle", ])
+  pupil_weights <- if (weighted) outer$n_groep8 else rep(1, nrow(outer))
+  fit <- lm(
+    reformulate(paste(x_col, "* disadvantage"), response = "pct_havo_plus"),
+    data = outer, weights = pupil_weights
+  )
+  coefs <- summary(fit)$coefficients[
+    paste0(x_col, ":disadvantageMost disadvantaged"),
+  ]
+  at_avg <- data.frame(
+    disadvantage = c("Least disadvantaged", "Most disadvantaged")
+  )
+  at_avg[[x_col]] <- national_target
+  pred <- unname(round(100 * predict(fit, at_avg)))
+  data.frame(
+    check = check,
+    gap_growth = -10 * coefs[["Estimate"]],
+    p = coefs[["Pr(>|t|)"]],
+    advantaged = pred[1],
+    disadvantaged = pred[2]
+  )
+}
+
+## Rerun the data-prep chunk above with another value for "<5" and return
+## its school table
+schools_with <- function(value) {
+  old <- options(hidden_value = value)
+  on.exit(options(old))
+  prep_env <- new.env()
+  eval(parse(text = knitr::knit_code$get("data-prep")), envir = prep_env)
+  prep_env$schools
+}
+
+## HAVO+ share with VMBO-GT/HAVO counted as HAVO+
+schools_gt <- schools |>
+  mutate(pct_havo_plus = (VMBO_GT_HAVO + HAVO + HAVO_VWO + VWO) / n_groep8)
+
+robustness <- bind_rows(
+  robust_fit(schools, "Main analysis (\"<5\" = 2.5)"),
+  robust_fit(schools_with(1), "\"<5\" = 1"),
+  robust_fit(schools_with(4), "\"<5\" = 4"),
+  robust_fit(schools, "Unweighted", weighted = FALSE),
+  robust_fit(filter(schools, n_groep8 >= 20), "Only schools with 20+ pupils"),
+  robust_fit(schools_gt, "VMBO-GT/HAVO counted as HAVO+")
+)
+
+## Show the checks as a table
+robustness |>
+  transmute(
+    Check = check,
+    `Extra gap per 10 points` = paste(round(gap_growth, 1), "pp"),
+    p = scales::pvalue(p),
+    `HAVO+ out of 100 at national average` = paste(
+      advantaged, "vs.", disadvantaged
+    )
+  ) |>
+  knitr::kable(align = "lccc")
+
+## Same model for each subject separately
+subject_check <- bind_rows(
+  robust_fit(schools, "Maths", x_col = "pct_maths_1s"),
+  robust_fit(schools, "Reading", x_col = "pct_reading_2f"),
+  robust_fit(schools, "Writing", x_col = "pct_writing_2f")
+)
+```
+
+Direction and significance never change, only size. With "<5" = 1 the gap at the national average is `r robustness$advantaged[2] - robustness$disadvantaged[2]` pupils out of 100, with "<5" = 4 it is `r robustness$advantaged[3] - robustness$disadvantaged[3]`. Counting VMBO-GT/HAVO as HAVO+ slows the growth but keeps the gap. The gap also grows for each subject separately (maths `r round(subject_check$gap_growth[1], 1)`, reading `r round(subject_check$gap_growth[2], 1)`, writing `r round(subject_check$gap_growth[3], 1)` points per 10 points).
+
 ## Conclusion
 
-*What can you conclude from your visualization? What are the limitations of this analysis?*
+No. At the national average, `r n_adv - n_dis` fewer pupils out of 100 get HAVO+ advice at a disadvantaged school, and the gap is largest where pupils do well. For teachers at disadvantaged schools: when your pupils score well, check whether your advice keeps up.
 
----
+We compare schools, not pupils, so we cannot say which advice a particular child got. The figure shows a difference, not its cause: teachers use more than the test, and we cannot see that. We have one school year and left out `r n_multi` schools with several locations, so the pattern may differ for them or in other years. Within our data, it did not depend on any choice we tested.
 
-**Before submitting:** run the lintr check on this file, and re-knit from a clean environment (`rm(list = ls())`, already done above) to make sure everything reproduces from scratch.
+## AI use
+
+We used Claude Code (Claude Opus). It wrote most of the R code for the data preparation and the figure (styling, annotations, layout), rendered alternative versions of the figure for us to choose from, and helped draft parts of this report, which we rewrote and checked against our analysis.
+
+We did not use it to decide the conclusion: we wrote the message and the headline ourselves, and kept our wording when it suggested changes. We gave it the research question, the codebook, the assignment and our rules (lintr style, the national average as the only reference point, schools rather than pupils).
+
+We checked its work by knitting from a fresh clone and recomputing numbers in R. It did make mistakes: asked for a data preparation script, it first built a web page we had not asked for, and it kept suggesting extra curves and histograms that made the figure busier without strengthening the message. We rejected most of them.

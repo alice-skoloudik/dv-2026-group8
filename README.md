@@ -11,7 +11,7 @@
 
 ## About this project
 
-This project uses the DUO doorstroomtoets (transfer test) data for 2024-2025 to compare primary schools' secondary-school advice with their pupils' test results. We relate each school's advice (e.g. the share of pupils advised HAVO or higher) to the share of its pupils reaching the target reference levels in maths (1S) and reading (2F), and test whether this relationship depends on the school weighting (*schoolweging*), a measure of how disadvantaged the pupil population is. Our final visualization is aimed at secondary schools and should show whether two schools with the same test results give the same advice, regardless of who their pupils are.
+This project uses the DUO doorstroomtoets (transfer test) data for 2024-2025 to compare primary schools' secondary-school advice with their pupils' test results. We relate each school's advice (e.g. the share of pupils advised HAVO or higher) to the share of its maths, reading and writing results at the target reference level (1S for maths, 2F for reading and writing), and test whether this relationship depends on the school weighting (*schoolweging*), a measure of how disadvantaged the pupil population is. Our final visualization is aimed at teachers at secondary schools and should show whether two schools with the same test results give the same advice, regardless of who their pupils are.
 
 ## Cloning this project
 
